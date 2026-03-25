@@ -30,7 +30,15 @@
         "Other"
     ],
     "activationEvents": [
-        "*"
+        "onStartupFinished",
+        "onView:treeLocalHistory",
+        "onCommand:treeLocalHistory.refresh",
+        "onCommand:treeLocalHistory.setRetentionDays",
+        "onCommand:local-history.showAll",
+        "onCommand:local-history.showCurrent",
+        "onCommand:local-history.compareToCurrent",
+        "onCommand:local-history.compareToActive",
+        "onCommand:local-history.compareToPrevious"
     ],
     "contributes": {
         "viewsContainers": {
