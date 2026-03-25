@@ -17,24 +17,24 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Tree
     const treeProvider = new HistoryTreeProvider(controller);
-    vscode.window.registerTreeDataProvider('treeLocalHistory', treeProvider);
+    context.subscriptions.push(vscode.window.registerTreeDataProvider('treeLocalHistory', treeProvider));
 
-    vscode.commands.registerCommand('treeLocalHistory.deleteAll', treeProvider.deleteAll, treeProvider);
-    vscode.commands.registerCommand('treeLocalHistory.refresh', treeProvider.refresh, treeProvider);
-    vscode.commands.registerCommand('treeLocalHistory.more', treeProvider.more, treeProvider);
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.deleteAll', treeProvider.deleteAll, treeProvider));
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.refresh', treeProvider.refresh, treeProvider));
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.more', treeProvider.more, treeProvider));
 
-    vscode.commands.registerCommand('treeLocalHistory.forCurrentFile', treeProvider.forCurrentFile, treeProvider);
-    vscode.commands.registerCommand('treeLocalHistory.forAll', treeProvider.forAll, treeProvider);
-    vscode.commands.registerCommand('treeLocalHistory.forSpecificFile', treeProvider.forSpecificFile, treeProvider);
-    vscode.commands.registerCommand('treeLocalHistory.setRetentionDays', treeProvider.setRetentionDays, treeProvider);
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.forCurrentFile', treeProvider.forCurrentFile, treeProvider));
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.forAll', treeProvider.forAll, treeProvider));
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.forSpecificFile', treeProvider.forSpecificFile, treeProvider));
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.setRetentionDays', treeProvider.setRetentionDays, treeProvider));
 
-    vscode.commands.registerCommand('treeLocalHistory.showEntry', treeProvider.show, treeProvider);
-    vscode.commands.registerCommand('treeLocalHistory.showSideEntry', treeProvider.showSide, treeProvider);
-    vscode.commands.registerCommand('treeLocalHistory.deleteEntry', treeProvider.delete, treeProvider);
-    vscode.commands.registerCommand('treeLocalHistory.compareToCurrentEntry', treeProvider.compareToCurrent, treeProvider);
-    vscode.commands.registerCommand('treeLocalHistory.selectEntry', treeProvider.select, treeProvider);
-    vscode.commands.registerCommand('treeLocalHistory.compareEntry', treeProvider.compare, treeProvider);
-    vscode.commands.registerCommand('treeLocalHistory.restoreEntry', treeProvider.restore, treeProvider);
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.showEntry', treeProvider.show, treeProvider));
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.showSideEntry', treeProvider.showSide, treeProvider));
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.deleteEntry', treeProvider.delete, treeProvider));
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.compareToCurrentEntry', treeProvider.compareToCurrent, treeProvider));
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.selectEntry', treeProvider.select, treeProvider));
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.compareEntry', treeProvider.compare, treeProvider));
+    context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.restoreEntry', treeProvider.restore, treeProvider));
 
     // Keep editor save hooks for unsaved buffers, but rely on file watching for external changes.
     context.subscriptions.push(vscode.workspace.onWillSaveTextDocument(
