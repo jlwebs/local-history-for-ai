@@ -223,6 +223,7 @@ On normal pushes and pull requests, the workflow:
 2. compiles the extension
 3. packages a `.vsix`
 4. uploads the `.vsix` as a GitHub Actions artifact
+5. publishes or updates a branch-scoped prerelease on GitHub
 
 On tag push such as:
 
@@ -233,7 +234,7 @@ git push origin v1.8.2
 
 the workflow additionally:
 
-1. creates a GitHub Release
+1. creates a versioned GitHub Release
 2. uploads the VSIX artifact
 
 Workflow file:
