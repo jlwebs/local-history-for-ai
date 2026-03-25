@@ -14,6 +14,7 @@ import anymatch = require('anymatch');
 // import copyFile = require('fs-copy-file');
 
 import {IHistorySettings, HistorySettings} from './history.settings';
+import { logInfo, logWarn } from './logger';
 
 interface IHistoryActionValues {
     active: string;
@@ -68,9 +69,11 @@ export class HistoryController {
 
         const settings = this.getSettings(file);
         if (!this.allowSavePath(settings, fileName)) {
+            logWarn(`Skipping file system snapshot for ${fileName}`);
             return Promise.resolve(false);
         }
 
+        logInfo(`Queue snapshot for ${fileName} (${reason || 'unknown'})`);
         return this.scheduleFileSnapshot(fileName, settings, reason);
     }
 
@@ -383,6 +386,7 @@ export class HistoryController {
     private saveFileSnapshot(fileName: string, settings: IHistorySettings, reason?: string): Promise<boolean> {
         return new Promise((resolve) => {
             if (!this.allowSavePath(settings, fileName)) {
+                logWarn(`Skipping save for ${fileName}: filtered or unsupported.`);
                 return resolve(false);
             }
 
@@ -391,10 +395,12 @@ export class HistoryController {
             const currentHash = this.computeFileHash(fileName);
 
             if (!currentHash) {
+                logWarn(`Unable to hash current file ${fileName}`);
                 return resolve(false);
             }
 
             if (latestHash && latestHash === currentHash) {
+                logInfo(`No snapshot written for ${fileName}: content unchanged.`);
                 return resolve(false);
             }
 
@@ -404,6 +410,9 @@ export class HistoryController {
                 this.purgeFile(settings, revisionPattern);
             }
 
+            if (saved) {
+                logInfo(`Snapshot written for ${fileName}`);
+            }
             resolve(saved);
         });
     }

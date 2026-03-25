@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 
 import { IHistoryFileProperties, HistoryController }  from './history.controller';
 import { IHistorySettings, HistorySettings } from './history.settings';
+import { logInfo, logWarn } from './logger';
 
 // import path = require('path');
 
@@ -36,6 +37,7 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
     public contentKind: EHistoryTreeContentKind = 0;
     private searchPattern: string;
     private currentSettings: IHistorySettings;
+    private emptyStateMessage = 'No history yet for the current file.';
 
     constructor(private controller: HistoryController) {
         this.initLocation();
@@ -87,10 +89,14 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
 
                 if (!this.historyFiles) {
 
-                    if (!vscode.window.activeTextEditor || !vscode.window.activeTextEditor.document)
+                    if (!vscode.window.activeTextEditor || !vscode.window.activeTextEditor.document) {
+                        this.emptyStateMessage = 'No active editor. Open a saved file to inspect local history.';
+                        logWarn(this.emptyStateMessage);
                         return resolve(items);
+                    }
 
                     const filename = vscode.window.activeTextEditor.document.uri;
+                    logInfo(`Tree refresh for active editor: ${filename.toString()}`);
                     const settings = this.controller.getSettings(filename);
                     this.currentSettings = settings;
 
@@ -120,6 +126,10 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
 
     private loadHistoryFile(fileName: vscode.Uri, settings: IHistorySettings): Promise<Object> {
         return new Promise((resolve, reject) => {
+            const activeEditor = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document;
+            if (activeEditor) {
+                logInfo(`Loading tree content for ${activeEditor.uri.fsPath || activeEditor.uri.toString()} (scheme=${activeEditor.uri.scheme}, untitled=${activeEditor.isUntitled})`);
+            }
 
             let pattern;
             switch (this.contentKind) {
@@ -148,6 +158,18 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
 
                     let grp = 'new';
                     const files = findFiles;
+                    if (!settings.enabled) {
+                        this.emptyStateMessage = 'History is disabled for this location. Check local-history.enabled and local-history.path.';
+                    } else if (!settings.historyPath) {
+                        this.emptyStateMessage = 'No history path resolved for this file.';
+                    } else if (this.contentKind === EHistoryTreeContentKind.Current && activeEditor && activeEditor.isUntitled) {
+                        this.emptyStateMessage = 'Current editor is untitled. Save the file first to create local history.';
+                    } else if (this.contentKind === EHistoryTreeContentKind.Current) {
+                        this.emptyStateMessage = 'No history yet for the current file. Make a saved change to create the first snapshot.';
+                    } else {
+                        this.emptyStateMessage = 'No matching history entries found.';
+                    }
+
                     if (files && files.length)
                         files.map(file => this.controller.decodeFile(file, settings))
                              .sort((f1, f2) => {
@@ -172,7 +194,9 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
                                     }
                                 // else
                                     // this.historyFiles['failed'].push(files[index]);
-                            })
+                            });
+
+                    logInfo(`History lookup pattern="${pattern}" historyPath="${settings.historyPath}" matches=${files ? files.length : 0}`);
                     return resolve(this.historyFiles);
                 })
         })
@@ -189,7 +213,7 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
                 items.push(item);
             });
         else
-            items.push(new HistoryItem(this, 'No history', EHistoryTreeItem.None));
+            items.push(new HistoryItem(this, this.emptyStateMessage, EHistoryTreeItem.None));
 
         return items;
     }

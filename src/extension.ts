@@ -2,14 +2,19 @@ import * as vscode from 'vscode';
 
 import {HistoryController}  from './history.controller';
 import HistoryTreeProvider  from './historyTree.provider';
+import { initLogger, logError, logInfo, showLogger } from './logger';
 
 /**
 * Activate the extension.
 */
 export function activate(context: vscode.ExtensionContext) {
-    const output = vscode.window.createOutputChannel('Vibe Local History');
-    context.subscriptions.push(output);
-    output.appendLine('Activating extension...');
+    initLogger(context);
+    showLogger(true);
+    logInfo('Welcome to Vibe Local History.');
+    logInfo('This extension tracks on-disk file changes and keeps timestamped snapshots in .history.');
+    logInfo('If the tree says "No history", check the active editor first. The default filter is "current file".');
+    logInfo('Supported sources: editor saves, git restore-like operations, scripts, external edits, and AI tools.');
+    logInfo('Activating extension...');
 
     try {
         const controller = new HistoryController();
@@ -85,12 +90,12 @@ export function activate(context: vscode.ExtensionContext) {
             }
         }));
 
-        output.appendLine('Extension activated successfully.');
+        logInfo('Extension activated successfully.');
     } catch (error) {
         const message = error instanceof Error ? error.stack || error.message : String(error);
-        output.appendLine('Activation failed.');
-        output.appendLine(message);
-        output.show(true);
+        logError('Activation failed.');
+        logError(message);
+        showLogger(true);
         vscode.window.showErrorMessage(`Vibe Local History failed to activate. See output channel for details.`);
         throw error;
     }
