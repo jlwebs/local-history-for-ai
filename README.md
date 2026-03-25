@@ -164,7 +164,7 @@ This makes it easy for AI tools to inspect history from the terminal without tou
   "local-history.enabled": 1,
   "local-history.path": "",
   "local-history.absolute": false,
-  "local-history.treeLocation": "explorer"
+  "local-history.treeLocation": "localHistory"
 }
 ```
 

@@ -295,7 +295,7 @@
                 },
                 "local-history.treeLocation": {
                     "type": "string",
-                    "default": "explorer",
+                    "default": "localHistory",
                     "enum": [
                         "explorer",
                         "localHistory"
