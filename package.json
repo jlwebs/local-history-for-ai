@@ -1,20 +1,20 @@
 {
-    "name": "local-history",
+    "name": "vibe-local-history",
     "displayName": "Vibe Local History",
-    "description": "Save files into local history",
-    "publisher": "xyz",
+    "description": "Track local file history from real file system changes",
+    "publisher": "vibetoolLabX",
     "version": "1.8.1",
     "engines": {
         "vscode": "^1.42.0"
     },
     "icon": "images/local-history.png",
-    "homepage": "https://github.com/zabel-xyz/local-history",
+    "homepage": "https://github.com/jlwebs/local-history-for-ai",
     "repository": {
         "type": "git",
-        "url": "https://github.com/zabel-xyz/local-history.git"
+        "url": "https://github.com/jlwebs/local-history-for-ai.git"
     },
     "bugs": {
-        "url": "https://github.com/zabel-xyz/local-history/issues"
+        "url": "https://github.com/jlwebs/local-history-for-ai/issues"
     },
     "bin": {
         "vibe-history": "./out/src/history-cli.js"
@@ -46,7 +46,7 @@
             "localHistory": [
                 {
                     "id": "treeLocalHistory",
-                    "name": "History",
+                    "name": "Vibe Local History",
                     "when": "local-history:treeLocation == localHistory"
                 }
             ],
