@@ -1,6 +1,6 @@
 {
     "name": "local-history",
-    "displayName": "Local History",
+    "displayName": "Vibe Local History",
     "description": "Save files into local history",
     "publisher": "xyz",
     "version": "1.8.1",
@@ -35,7 +35,7 @@
                 {
                     "id": "localHistory",
                     "icon": "resources/images/history.svg",
-                    "title": "Local history"
+                    "title": "Vibe Local History"
                 }
             ]
         },
@@ -50,7 +50,7 @@
             "explorer": [
                 {
                     "id": "treeLocalHistoryExplorer",
-                    "name": "Local history",
+                    "name": "Vibe Local History",
                     "when": "local-history:treeLocation == explorer"
                 }
             ]
@@ -292,6 +292,7 @@
     "scripts": {
         "vscode:prepublish": "tsc -p ./",
         "compile": "tsc -p ./",
+        "package:vsix": "npx @vscode/vsce package --no-dependencies",
         "postinstall": "node ./node_modules/vscode/bin/install"
     },
     "dependencies": {
@@ -301,6 +302,7 @@
         "rimraf": "3.0.2"
     },
     "devDependencies": {
+        "@vscode/vsce": "^3.6.2",
         "typescript": "3.7.5",
         "vscode": "1.1.36",
         "@types/node": "13.7.1"

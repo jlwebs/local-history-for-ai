@@ -2,13 +2,15 @@
 
 A visual source code plugin for maintaining local history of files.
 
-Every time you modify a file, a copy of the old contents is kept in the local history.
+Every time a file changes on disk, a copy of its contents is kept in the local history.
 At any time, you can compare a file with any older version from the history.
 It can help you out when you change or delete a file by accident.
 The history can also help you out when your workspace has a catastrophic problem.
 Each file revision is stored in a separate file inside the .history folder of your workspace directory
 (you can also configure another location, see local-history.path).
 e.g., `.history/foo/bar/myFile_20151212205930.ts`
+
+The extension watches the file system, so changes coming from Git operations, scripts, AI tools, or external editors are captured too. A small debounce window and content hash check avoid creating duplicate snapshots during bursty updates.
 
 You can easily navigate between history files with the `local-history tree` in the explorer pane.<BR>
 
@@ -69,6 +71,10 @@ The files displayed depend on setting `local-history.maxDisplay` to see more, us
     local-history.compareToCurrent // compare current version with another version in history
     local-history.compareToActive // compare active file with another version in history
     local-history.compareToPrevious // compare a version in history with its previous version
+
+## Release
+
+Push a tag like `v1.8.2` to trigger GitHub Actions. The workflow installs dependencies with `--ignore-scripts`, compiles the extension, packages a `.vsix`, and uploads it to a GitHub Release automatically.
 
 ## Note
 When .history folder is stored in workspace, you can add a "files.exclude".

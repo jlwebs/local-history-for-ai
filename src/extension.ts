@@ -36,13 +36,12 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('treeLocalHistory.compareEntry', treeProvider.compare, treeProvider);
     vscode.commands.registerCommand('treeLocalHistory.restoreEntry', treeProvider.restore, treeProvider);
 
-    // Create first history before save document
-    vscode.workspace.onWillSaveTextDocument(
+    // Keep editor save hooks for unsaved buffers, but rely on file watching for external changes.
+    context.subscriptions.push(vscode.workspace.onWillSaveTextDocument(
         e => e.waitUntil(controller.saveFirstRevision(e.document))
-    );
+    ));
 
-    // Create history on save document
-    vscode.workspace.onDidSaveTextDocument(document => {
+    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(document => {
         controller.saveRevision(document)
             .then ((saveDocument) => {
                 // refresh viewer (if any)
@@ -50,13 +49,28 @@ export function activate(context: vscode.ExtensionContext) {
                     treeProvider.refresh();
                 }
             });
-    });
+    }));
 
-    vscode.window.onDidChangeActiveTextEditor(
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*', false, false, false);
+    context.subscriptions.push(watcher);
+    context.subscriptions.push(watcher.onDidCreate(uri => {
+        controller.saveFileRevision(uri, 'create')
+            .then(saved => saved && treeProvider.refresh());
+    }));
+    context.subscriptions.push(watcher.onDidChange(uri => {
+        controller.saveFileRevision(uri, 'change')
+            .then(saved => saved && treeProvider.refresh());
+    }));
+    context.subscriptions.push(watcher.onDidDelete(uri => {
+        controller.handleDeletion(uri)
+            .then(changed => changed && treeProvider.refresh());
+    }));
+
+    context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(
         e => treeProvider.changeActiveFile()
-    );
+    ));
 
-    vscode.workspace.onDidChangeConfiguration(configChangedEvent => {
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(configChangedEvent => {
         if ( configChangedEvent.affectsConfiguration('local-history.treeLocation') )
             treeProvider.initLocation();
 
@@ -64,7 +78,7 @@ export function activate(context: vscode.ExtensionContext) {
             controller.clearSettings();
             treeProvider.refresh();
         }
-    });
+    }));
 }
 
 // function deactivate() {

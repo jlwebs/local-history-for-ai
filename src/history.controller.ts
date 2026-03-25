@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 
 import fs = require('fs');
 import path = require('path');
+import crypto = require('crypto');
 import Timeout from './timeout';
 
 import glob = require('glob');
@@ -36,6 +37,7 @@ export class HistoryController {
 
     private settings: HistorySettings;
     private saveBatch;
+    private fileWatchBatch: Map<string, NodeJS.Timeout>;
 
     private pattern = '_'+('[0-9]'.repeat(14));
     private regExp = /_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/;
@@ -43,6 +45,7 @@ export class HistoryController {
     constructor() {
         this.settings = new HistorySettings();
         this.saveBatch = new Map();
+        this.fileWatchBatch = new Map();
     }
 
     public saveFirstRevision(document: vscode.TextDocument) {
@@ -55,6 +58,40 @@ export class HistoryController {
 
     public saveRevision(document: vscode.TextDocument): Promise<vscode.TextDocument> {
         return this.internalSave(document);
+    }
+
+    public saveFileRevision(file: vscode.Uri, reason?: string): Promise<boolean> {
+        const fileName = file && file.fsPath;
+        if (!fileName) {
+            return Promise.resolve(false);
+        }
+
+        const settings = this.getSettings(file);
+        if (!this.allowSavePath(settings, fileName)) {
+            return Promise.resolve(false);
+        }
+
+        return this.scheduleFileSnapshot(fileName, settings, reason);
+    }
+
+    public handleDeletion(file: vscode.Uri): Promise<boolean> {
+        const fileName = file && file.fsPath;
+        if (!fileName) {
+            return Promise.resolve(false);
+        }
+
+        const timer = this.fileWatchBatch.get(fileName);
+        if (timer) {
+            clearTimeout(timer);
+            this.fileWatchBatch.delete(fileName);
+        }
+
+        const settings = this.getSettings(file);
+        if (!this.allowSavePath(settings, fileName)) {
+            return Promise.resolve(false);
+        }
+
+        return Promise.resolve(false);
     }
 
     public showAll(editor: vscode.TextEditor) {
@@ -151,6 +188,39 @@ export class HistoryController {
         });
     }
 
+    public purgeExpiredHistory(file: vscode.Uri): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            const settings = this.getSettings(file);
+            if (!settings.enabled || !settings.historyPath || settings.daysLimit <= 0) {
+                return resolve();
+            }
+
+            glob('**/*', {cwd: settings.historyPath.replace(/\\/g, '/'), absolute: true}, (err, files: string[]) => {
+                if (err) {
+                    return reject(err);
+                }
+
+                files.forEach(historyFile => {
+                    try {
+                        const stat = fs.statSync(historyFile);
+                        if (!stat.isFile()) {
+                            return;
+                        }
+
+                        const endTime = stat.birthtime.getTime() + settings.daysLimit * 24 * 60 * 60 * 1000;
+                        if (Date.now() > endTime) {
+                            fs.unlinkSync(historyFile);
+                        }
+                    } catch (e) {
+                        // Continue purging other files.
+                    }
+                });
+
+                resolve();
+            });
+        });
+    }
+
     public deleteHistory(fileName: string): Promise<void> {
         return new Promise<void>((resolve, reject) => {
             const settings = this.getSettings(vscode.Uri.file(fileName));
@@ -212,16 +282,7 @@ export class HistoryController {
     private internalSaveDocument(document: vscode.TextDocument, settings: IHistorySettings, isOriginal?: boolean, timeout?: Timeout): Promise<vscode.TextDocument> {
 
         return new Promise((resolve, reject) => {
-
-            let revisionDir;
-            if (!settings.absolute) {
-                revisionDir = path.dirname(this.getRelativePath(document.fileName).replace(/\//g, path.sep));
-            } else {
-                revisionDir = this.normalizePath(path.dirname(document.fileName), false);
-            }
-
-            const p = path.parse(document.fileName);
-            const revisionPattern = this.joinPath(settings.historyPath, revisionDir, p.name, p.ext);     // toto_[0-9]...
+            const revisionPattern = this.getRevisionPattern(document.fileName, settings);
 
             if (isOriginal) {
                 // if already some files exists, don't save an original version (cause: the really original version is lost) !
@@ -238,21 +299,14 @@ export class HistoryController {
             else if (settings.saveDelay)
                 this.saveBatch.delete(document.fileName);
 
-            let now = new Date(),
-                nowInfo;
-            if (isOriginal) {
-                // find original date (if any)
-                const state = fs.statSync(document.fileName);
-                if (state)
-                    now = state.mtime;
+            const latest = this.findLatestHistoryFile(document.fileName, settings);
+            const latestHash = latest && fs.existsSync(latest) ? this.computeFileHash(latest) : null;
+            const currentHash = this.computeFileHash(document.fileName);
+            if (!isOriginal && latestHash && currentHash && latestHash === currentHash) {
+                return resolve(undefined);
             }
-            // remove 1 sec to original version, to avoid same name as currently version
-            now = new Date(now.getTime() - (now.getTimezoneOffset() * 60000) - (isOriginal ? 1000 : 0));
-            nowInfo = now.toISOString().substring(0, 19).replace(/[-:T]/g, '');
 
-            const revisionFile = this.joinPath(settings.historyPath, revisionDir, p.name, p.ext, `_${nowInfo}`); // toto_20151213215326.js
-
-            if (this.mkDirRecursive(revisionFile) && this.copyFile(document.fileName, revisionFile, timeout)) {
+            if (this.copyFileRevision(document.fileName, settings, isOriginal, timeout)) {
                 if (settings.daysLimit > 0 && !isOriginal)
                     this.purge(document, settings, revisionPattern);
                 return resolve(document);
@@ -277,6 +331,81 @@ export class HistoryController {
             return false;
 
         return true;
+    }
+
+    private allowSavePath(settings: IHistorySettings, fileName: string): boolean {
+        if (!settings.enabled || !fileName) {
+            return false;
+        }
+
+        if (!fs.existsSync(fileName)) {
+            return false;
+        }
+
+        const stat = fs.statSync(fileName);
+        if (!stat.isFile()) {
+            return false;
+        }
+
+        const docFile = fileName.replace(/\\/g, '/');
+        // @ts-ignore
+        if (settings.exclude && settings.exclude.length > 0 && anymatch(settings.exclude, docFile))
+            return false;
+
+        const historyPath = settings.historyPath && settings.historyPath.replace(/\\/g, '/');
+        if (historyPath && docFile.indexOf(historyPath) === 0) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private scheduleFileSnapshot(fileName: string, settings: IHistorySettings, reason?: string): Promise<boolean> {
+        const delay = Math.max(settings.saveDelay * 1000, 250);
+
+        return new Promise(resolve => {
+            const currentTimer = this.fileWatchBatch.get(fileName);
+            if (currentTimer) {
+                clearTimeout(currentTimer);
+            }
+
+            const timer = setTimeout(() => {
+                this.fileWatchBatch.delete(fileName);
+                this.saveFileSnapshot(fileName, settings, reason)
+                    .then(resolve)
+                    .catch(() => resolve(false));
+            }, delay);
+
+            this.fileWatchBatch.set(fileName, timer);
+        });
+    }
+
+    private saveFileSnapshot(fileName: string, settings: IHistorySettings, reason?: string): Promise<boolean> {
+        return new Promise((resolve) => {
+            if (!this.allowSavePath(settings, fileName)) {
+                return resolve(false);
+            }
+
+            const latest = this.findLatestHistoryFile(fileName, settings);
+            const latestHash = latest && fs.existsSync(latest) ? this.computeFileHash(latest) : null;
+            const currentHash = this.computeFileHash(fileName);
+
+            if (!currentHash) {
+                return resolve(false);
+            }
+
+            if (latestHash && latestHash === currentHash) {
+                return resolve(false);
+            }
+
+            const saved = this.copyFileRevision(fileName, settings, false);
+            if (saved && settings.daysLimit > 0) {
+                const revisionPattern = this.getRevisionPattern(fileName, settings);
+                this.purgeFile(settings, revisionPattern);
+            }
+
+            resolve(saved);
+        });
     }
 
     private getHistoryFiles(patternFilePath: string, settings: IHistorySettings, noLimit?: boolean):  Promise<string[]> {
@@ -449,6 +578,83 @@ export class HistoryController {
         return path.join(root, dir, name + pattern + ext);
     }
 
+    private getRevisionPattern(fileName: string, settings: IHistorySettings): string {
+        let revisionDir;
+        if (!settings.absolute) {
+            revisionDir = path.dirname(this.getRelativePath(fileName).replace(/\//g, path.sep));
+        } else {
+            revisionDir = this.normalizePath(path.dirname(fileName), false);
+        }
+
+        const p = path.parse(fileName);
+        return this.joinPath(settings.historyPath, revisionDir, p.name, p.ext);
+    }
+
+    private getRevisionFile(fileName: string, settings: IHistorySettings, isOriginal?: boolean): string {
+        let now = new Date(),
+            nowInfo;
+
+        if (isOriginal) {
+            const state = fs.statSync(fileName);
+            if (state)
+                now = state.mtime;
+        }
+
+        now = new Date(now.getTime() - (now.getTimezoneOffset() * 60000) - (isOriginal ? 1000 : 0));
+        nowInfo = now.toISOString().substring(0, 19).replace(/[-:T]/g, '');
+
+        const revisionPattern = this.getRevisionPattern(fileName, settings);
+        const parsed = path.parse(revisionPattern);
+        return this.joinPath(parsed.dir, '', parsed.name, parsed.ext, `_${nowInfo}`);
+    }
+
+    private copyFileRevision(fileName: string, settings: IHistorySettings, isOriginal?: boolean, timeout?: Timeout): boolean {
+        const revisionFile = this.getRevisionFile(fileName, settings, isOriginal);
+        return this.mkDirRecursive(revisionFile) && this.copyFile(fileName, revisionFile, timeout);
+    }
+
+    private findLatestHistoryFile(fileName: string, settings: IHistorySettings): string {
+        const revisionPattern = this.getRevisionPattern(fileName, settings);
+        const files = glob.sync(revisionPattern, {cwd: settings.historyPath.replace(/\\/g, '/'), absolute: true});
+        if (!files || !files.length) {
+            return null;
+        }
+
+        return files[files.length - 1];
+    }
+
+    private computeFileHash(fileName: string): string {
+        try {
+            const data = fs.readFileSync(fileName);
+            return crypto.createHash('sha1').update(data).digest('hex');
+        } catch (err) {
+            return null;
+        }
+    }
+
+    private purgeFile(settings: IHistorySettings, pattern: string) {
+        this.getHistoryFiles(pattern, settings, true)
+            .then(files => {
+                if (!files || !files.length) {
+                    return;
+                }
+
+                let stat: fs.Stats,
+                    now: number = new Date().getTime(),
+                    endTime: number;
+
+                for (let file of files) {
+                    stat = fs.statSync(file);
+                    if (stat && stat.isFile()) {
+                        endTime = stat.birthtime.getTime() + settings.daysLimit * 24 * 60 * 60 * 1000;
+                        if (now > endTime) {
+                            fs.unlinkSync(file);
+                        }
+                    }
+                }
+            });
+    }
+
     private findCurrent(activeFilename: string, settings: IHistorySettings): vscode.Uri {
         if (!settings.enabled)
           return vscode.Uri.file(activeFilename);
@@ -489,29 +695,7 @@ export class HistoryController {
     }
 
     private purge(document: vscode.TextDocument, settings: IHistorySettings, pattern: string) {
-        let me = this;
-
-        me.getHistoryFiles(pattern, settings, true)
-            .then(files => {
-
-                if (!files || !files.length) {
-                    return;
-                }
-
-                let stat: fs.Stats,
-                    now: number = new Date().getTime(),
-                    endTime: number;
-
-                for (let file of files) {
-                    stat = fs.statSync(file);
-                    if (stat && stat.isFile()) {
-                        endTime = stat.birthtime.getTime() + settings.daysLimit * 24*60*60*1000;
-                        if (now > endTime) {
-                            fs.unlinkSync(file);
-                        }
-                    }
-                }
-            });
+        this.purgeFile(settings, pattern);
     }
 
     private getRelativePath(fileName: string) {
