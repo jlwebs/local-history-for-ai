@@ -1,10 +1,12 @@
 .vscode/**
+.npm-cache/**
 typings/**
 **/.history/**
 src/**
 **/*.map
 .gitignore
 .gitattributes
+.github/**
 tsconfig.json
 tslint.json
 TODO.TXT

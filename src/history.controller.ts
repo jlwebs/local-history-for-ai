@@ -22,6 +22,28 @@ interface IHistoryActionValues {
     previous: string;
 }
 
+export interface IPacketInfo {
+    id: string;
+    startedAt: string;
+    lastActivityAt: string;
+    snapshotCount: number;
+    files: {[relativeFile: string]: number};
+}
+
+export interface IPacketSnapshotInfo {
+    packetId: string;
+    sourceFile: string;
+    savedAt: string;
+}
+
+interface IPacketStoreData {
+    version: number;
+    currentPacketId?: string;
+    lastActivityAt?: string;
+    packets: {[packetId: string]: IPacketInfo};
+    snapshots: {[relativeSnapshotPath: string]: IPacketSnapshotInfo};
+}
+
 export interface IHistoryFileProperties {
     dir: string;
     name: string;
@@ -40,7 +62,7 @@ export class HistoryController {
     private saveBatch;
     private fileWatchBatch: Map<string, NodeJS.Timeout>;
 
-    private pattern = '_'+('[0-9]'.repeat(14));
+    private pattern = '_*';
     private regExp = /_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/;
 
     constructor() {
@@ -169,6 +191,16 @@ export class HistoryController {
         this.settings.clear();
     }
 
+    public getPacketInfo(fileName: string, settings: IHistorySettings): IPacketSnapshotInfo {
+        const store = this.readPacketStore(settings);
+        return store.snapshots[this.getRelativeHistoryPath(fileName, settings)];
+    }
+
+    public getPacketStore(file: vscode.Uri): {[packetId: string]: IPacketInfo} {
+        const settings = this.getSettings(file);
+        return this.readPacketStore(settings).packets;
+    }
+
     public deleteFile(fileName: string): Promise<void> {
         return this.deleteFiles([fileName]);
     }
@@ -213,6 +245,7 @@ export class HistoryController {
                         const endTime = stat.birthtime.getTime() + settings.daysLimit * 24 * 60 * 60 * 1000;
                         if (Date.now() > endTime) {
                             fs.unlinkSync(historyFile);
+                            this.cleanupPacketMetadata([historyFile]);
                         }
                     } catch (e) {
                         // Continue purging other files.
@@ -309,7 +342,9 @@ export class HistoryController {
                 return resolve(undefined);
             }
 
-            if (this.copyFileRevision(document.fileName, settings, isOriginal, timeout)) {
+            const revisionFile = this.copyFileRevision(document.fileName, settings, isOriginal, timeout);
+            if (revisionFile) {
+                this.registerSnapshotPacket(settings, document.fileName, revisionFile, new Date());
                 if (settings.daysLimit > 0 && !isOriginal)
                     this.purge(document, settings, revisionPattern);
                 return resolve(document);
@@ -405,6 +440,9 @@ export class HistoryController {
             }
 
             const saved = this.copyFileRevision(fileName, settings, false);
+            if (saved) {
+                this.registerSnapshotPacket(settings, fileName, saved, new Date());
+            }
             if (saved && settings.daysLimit > 0) {
                 const revisionPattern = this.getRevisionPattern(fileName, settings);
                 this.purgeFile(settings, revisionPattern);
@@ -413,7 +451,7 @@ export class HistoryController {
             if (saved) {
                 logInfo(`Snapshot written for ${fileName}`);
             }
-            resolve(saved);
+            resolve(Boolean(saved));
         });
     }
 
@@ -612,14 +650,22 @@ export class HistoryController {
         now = new Date(now.getTime() - (now.getTimezoneOffset() * 60000) - (isOriginal ? 1000 : 0));
         nowInfo = now.toISOString().substring(0, 19).replace(/[-:T]/g, '');
 
-        const revisionPattern = this.getRevisionPattern(fileName, settings);
-        const parsed = path.parse(revisionPattern);
-        return this.joinPath(parsed.dir, '', parsed.name, parsed.ext, `_${nowInfo}`);
+        let revisionDir;
+        if (!settings.absolute) {
+            revisionDir = path.dirname(this.getRelativePath(fileName).replace(/\//g, path.sep));
+        } else {
+            revisionDir = this.normalizePath(path.dirname(fileName), false);
+        }
+
+        const parsed = path.parse(fileName);
+        return this.joinPath(settings.historyPath, revisionDir, parsed.name, parsed.ext, `_${nowInfo}`);
     }
 
-    private copyFileRevision(fileName: string, settings: IHistorySettings, isOriginal?: boolean, timeout?: Timeout): boolean {
+    private copyFileRevision(fileName: string, settings: IHistorySettings, isOriginal?: boolean, timeout?: Timeout): string {
         const revisionFile = this.getRevisionFile(fileName, settings, isOriginal);
-        return this.mkDirRecursive(revisionFile) && this.copyFile(fileName, revisionFile, timeout);
+        return this.mkDirRecursive(revisionFile) && this.copyFile(fileName, revisionFile, timeout)
+            ? revisionFile
+            : undefined;
     }
 
     private findLatestHistoryFile(fileName: string, settings: IHistorySettings): string {
@@ -690,6 +736,7 @@ export class HistoryController {
         return new Promise<void>((resolve, reject) => {
             Promise.all(fileNames.map(file => this.internalDeleteFile(file)))
                 .then(results => {
+                    this.cleanupPacketMetadata(fileNames);
                     // Display 1st error
                     results.some((item: any) => {
                         if (item.err) {
@@ -754,6 +801,189 @@ export class HistoryController {
                 return dir.replace('\\', ':\\');
         } else
             return dir;
+    }
+
+    private getPacketStorePath(settings: IHistorySettings) {
+        return path.join(settings.historyPath, '.vibe-packets.json');
+    }
+
+    private createPacketStore(): IPacketStoreData {
+        return {
+            version: 1,
+            packets: {},
+            snapshots: {}
+        };
+    }
+
+    private readPacketStore(settings: IHistorySettings): IPacketStoreData {
+        const storePath = this.getPacketStorePath(settings);
+        try {
+            if (!fs.existsSync(storePath)) {
+                return this.createPacketStore();
+            }
+
+            const raw = fs.readFileSync(storePath, 'utf8');
+            const parsed = JSON.parse(raw) as IPacketStoreData;
+            return {
+                version: parsed.version || 1,
+                currentPacketId: parsed.currentPacketId,
+                lastActivityAt: parsed.lastActivityAt,
+                packets: parsed.packets || {},
+                snapshots: parsed.snapshots || {}
+            };
+        } catch (err) {
+            logWarn(`Failed to read packet store. Resetting packet metadata. ${err}`);
+            return this.createPacketStore();
+        }
+    }
+
+    private writePacketStore(settings: IHistorySettings, store: IPacketStoreData) {
+        const storePath = this.getPacketStorePath(settings);
+        this.mkDirRecursive(storePath);
+        fs.writeFileSync(storePath, JSON.stringify(store, null, 2), 'utf8');
+    }
+
+    private getRelativeHistoryPath(fileName: string, settings: IHistorySettings) {
+        return path.relative(settings.historyPath, fileName).replace(/\\/g, '/');
+    }
+
+    private getTrackedRelativePath(fileName: string, settings: IHistorySettings) {
+        if (!settings.absolute && settings.folder) {
+            return this.getRelativePath(fileName).replace(/\\/g, '/');
+        }
+
+        return path.resolve(fileName).replace(/\\/g, '/');
+    }
+
+    private registerSnapshotPacket(settings: IHistorySettings, sourceFile: string, revisionFile: string, savedAt: Date) {
+        if (!settings.packetGrouping) {
+            return;
+        }
+
+        const store = this.readPacketStore(settings);
+        const savedAtIso = savedAt.toISOString();
+        const cooldownMs = Math.max(1, settings.packetCooldownMinutes || 2) * 60 * 1000;
+        const relativeSnapshotPath = this.getRelativeHistoryPath(revisionFile, settings);
+        const relativeFile = this.getTrackedRelativePath(sourceFile, settings);
+
+        let packetId = store.currentPacketId;
+        if (store.lastActivityAt) {
+            const lastActivity = new Date(store.lastActivityAt).getTime();
+            if ((savedAt.getTime() - lastActivity) > cooldownMs) {
+                packetId = undefined;
+            }
+        }
+
+        if (!packetId || !store.packets[packetId]) {
+            packetId = `pkt-${savedAtIso.substring(0, 19).replace(/[-:T]/g, '')}`;
+            store.packets[packetId] = {
+                id: packetId,
+                startedAt: savedAtIso,
+                lastActivityAt: savedAtIso,
+                snapshotCount: 0,
+                files: {}
+            };
+        }
+
+        const packet = store.packets[packetId];
+        packet.lastActivityAt = savedAtIso;
+        packet.snapshotCount += 1;
+        packet.files[relativeFile] = (packet.files[relativeFile] || 0) + 1;
+
+        store.currentPacketId = packetId;
+        store.lastActivityAt = savedAtIso;
+        store.snapshots[relativeSnapshotPath] = {
+            packetId,
+            sourceFile: relativeFile,
+            savedAt: savedAtIso
+        };
+
+        this.writePacketStore(settings, store);
+        logInfo(`Snapshot ${relativeSnapshotPath} assigned to ${packetId}`);
+    }
+
+    private cleanupPacketMetadata(historyFiles: string[]) {
+        const groupedByHistoryRoot = new Map<string, string[]>();
+
+        historyFiles
+            .filter(fileName => !!fileName && path.basename(fileName) !== '.vibe-packets.json')
+            .forEach(fileName => {
+                const historyRoot = this.findHistoryRootForSnapshot(fileName);
+                if (!historyRoot) {
+                    return;
+                }
+
+                if (!groupedByHistoryRoot.has(historyRoot)) {
+                    groupedByHistoryRoot.set(historyRoot, []);
+                }
+
+                groupedByHistoryRoot.get(historyRoot).push(fileName);
+            });
+
+        groupedByHistoryRoot.forEach((files, historyRoot) => {
+            const storePath = path.join(historyRoot, '.vibe-packets.json');
+            if (!fs.existsSync(storePath)) {
+                return;
+            }
+
+            try {
+                const raw = fs.readFileSync(storePath, 'utf8');
+                const store = JSON.parse(raw) as IPacketStoreData;
+                let changed = false;
+
+                files.forEach(fileName => {
+                    const relativeSnapshotPath = path.relative(historyRoot, fileName).replace(/\\/g, '/');
+                    const snapshotInfo = store.snapshots && store.snapshots[relativeSnapshotPath];
+                    if (!snapshotInfo) {
+                        return;
+                    }
+
+                    delete store.snapshots[relativeSnapshotPath];
+                    changed = true;
+
+                    const packet = store.packets && store.packets[snapshotInfo.packetId];
+                    if (!packet) {
+                        return;
+                    }
+
+                    packet.snapshotCount = Math.max(0, (packet.snapshotCount || 0) - 1);
+                    if (packet.files && packet.files[snapshotInfo.sourceFile]) {
+                        packet.files[snapshotInfo.sourceFile] = Math.max(0, packet.files[snapshotInfo.sourceFile] - 1);
+                        if (packet.files[snapshotInfo.sourceFile] === 0) {
+                            delete packet.files[snapshotInfo.sourceFile];
+                        }
+                    }
+
+                    if (packet.snapshotCount === 0 || !Object.keys(packet.files || {}).length) {
+                        delete store.packets[snapshotInfo.packetId];
+                        if (store.currentPacketId === snapshotInfo.packetId) {
+                            delete store.currentPacketId;
+                            delete store.lastActivityAt;
+                        }
+                    }
+                });
+
+                if (changed) {
+                    fs.writeFileSync(storePath, JSON.stringify(store, null, 2), 'utf8');
+                }
+            } catch (err) {
+                logWarn(`Failed to cleanup packet metadata for ${historyRoot}. ${err}`);
+            }
+        });
+    }
+
+    private findHistoryRootForSnapshot(fileName: string) {
+        let current = path.dirname(fileName);
+
+        while (current && current !== path.dirname(current)) {
+            if (fs.existsSync(path.join(current, '.vibe-packets.json'))) {
+                return current;
+            }
+
+            current = path.dirname(current);
+        }
+
+        return undefined;
     }
 }
 

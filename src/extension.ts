@@ -36,7 +36,11 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.forCurrentFile', treeProvider.forCurrentFile, treeProvider));
         context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.forAll', treeProvider.forAll, treeProvider));
         context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.forSpecificFile', treeProvider.forSpecificFile, treeProvider));
+        context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.openControls', treeProvider.openControls, treeProvider));
         context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.setRetentionDays', treeProvider.setRetentionDays, treeProvider));
+        context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.toggleEnabled', treeProvider.toggleEnabled, treeProvider));
+        context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.togglePacketGrouping', treeProvider.togglePacketGrouping, treeProvider));
+        context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.setPacketCooldown', treeProvider.setPacketCooldown, treeProvider));
 
         context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.showEntry', treeProvider.show, treeProvider));
         context.subscriptions.push(vscode.commands.registerCommand('treeLocalHistory.showSideEntry', treeProvider.showSide, treeProvider));

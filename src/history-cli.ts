@@ -11,12 +11,35 @@ interface IRevisionEntry {
     date: Date;
     workspaceFile: string;
     relativeFile: string;
+    packetId?: string;
 }
 
 interface IContext {
     cwd: string;
     workspaceRoot: string;
     historyRoot: string;
+}
+
+interface IPacketInfo {
+    id: string;
+    startedAt: string;
+    lastActivityAt: string;
+    snapshotCount: number;
+    files: {[relativeFile: string]: number};
+}
+
+interface IPacketSnapshotInfo {
+    packetId: string;
+    sourceFile: string;
+    savedAt: string;
+}
+
+interface IPacketStoreData {
+    version: number;
+    currentPacketId?: string;
+    lastActivityAt?: string;
+    packets: {[packetId: string]: IPacketInfo};
+    snapshots: {[relativeSnapshotPath: string]: IPacketSnapshotInfo};
 }
 
 const TIMESTAMP_SUFFIX = /_(\d{14})(\.[^.]*)$/;
@@ -44,6 +67,10 @@ function main() {
             case 'lg':
                 runLog(context, args.slice(1));
                 return;
+            case 'packets':
+            case 'pk':
+                runPackets(context, args.slice(1));
+                return;
             case 'show':
             case 'sh':
                 runShow(context, args.slice(1));
@@ -69,16 +96,18 @@ function printHelp() {
 
 Commands:
   status|st [--all] [path]        Show tracked files changed since latest snapshot
-  log|lg <file>                   List snapshots for a file
-  show|sh <file> [rev]            Print a snapshot to stdout
-  diff|di <file> [rev] [rev2]     Diff current vs rev, or rev vs rev2
-  restore|rs <file> [rev]         Restore a snapshot into the working file
+  packets|pk [path]               List packet ids and grouped change counts
+  log|lg <file|packet:id>         List snapshots for a file or packet
+  show|sh <file|packet:id> [rev]  Print a snapshot or packet summary
+  diff|di <file|packet:id> [...]  Diff current vs rev, rev vs rev2, or packet vs workspace
+  restore|rs <file|packet:id>     Restore a file snapshot or an entire packet
 
 Options:
   --history-dir <path>            Override the .history directory root
 
 Revision syntax:
-  Use numeric indexes from 'log'. 0 is the latest snapshot.`);
+  Use numeric indexes from 'log'. 0 is the latest snapshot.
+  Packet references accept packet:<id> or pkt-YYYYMMDDHHMMSS.`);
 }
 
 function resolveContext(cwd: string, historyOverride?: string): IContext {
@@ -160,14 +189,36 @@ function runLog(context: IContext, args: string[]) {
         throw new Error('log requires a file path.');
     }
 
-    const revisions = getRevisionsForFile(context, fileArg);
+    const revisions = isPacketRef(fileArg)
+        ? getRevisionsForPacket(context, fileArg)
+        : getRevisionsForFile(context, fileArg);
     if (!revisions.length) {
         console.log('No snapshots found.');
         return;
     }
 
     revisions.forEach(revision => {
-        console.log(`${revision.index}  ${formatRelativeAge(revision.date)}  ${formatLocalDate(revision.date)}  ${revision.relativeFile}`);
+        console.log(`${revision.index}  ${formatRelativeAge(revision.date)}  ${formatLocalDate(revision.date)}  ${revision.packetId || '-'}  ${revision.relativeFile}`);
+    });
+}
+
+function runPackets(context: IContext, args: string[]) {
+    const packetStore = readPacketStore(context);
+    const fileArg = firstPositional(args);
+    const filterFile = fileArg ? normalizeRelative(context, fileArg) : undefined;
+    const packets = Object.keys(packetStore.packets)
+        .map(id => packetStore.packets[id])
+        .filter(packet => !filterFile || Boolean(packet.files[filterFile]))
+        .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+
+    if (!packets.length) {
+        console.log('No packets found.');
+        return;
+    }
+
+    packets.forEach(packet => {
+        const fileCount = Object.keys(packet.files || {}).length;
+        console.log(`${packet.id}  ${formatRelativeAge(new Date(packet.startedAt))}  ${fileCount} files  ${packet.snapshotCount} changes`);
     });
 }
 
@@ -178,6 +229,34 @@ function runShow(context: IContext, args: string[]) {
     }
 
     const positional = positionalArgs(args);
+    if (isPacketRef(fileArg)) {
+        const packetId = normalizePacketRef(fileArg);
+        const revisions = getRevisionsForPacket(context, fileArg);
+        if (!revisions.length) {
+            throw new Error(`No snapshots found for packet: ${packetId}`);
+        }
+
+        const latestByFile = collectLatestByFile(revisions);
+        const packetStore = readPacketStore(context);
+        const packet = packetStore.packets[packetId];
+        const lines = [
+            `packet ${packetId}`,
+            `started ${packet && packet.startedAt ? packet.startedAt : '-'}`,
+            `lastActivity ${packet && packet.lastActivityAt ? packet.lastActivityAt : '-'}`,
+            `files ${Object.keys(latestByFile).length}`,
+            `snapshots ${revisions.length}`,
+            ''
+        ];
+
+        Object.keys(latestByFile).sort().forEach(relativeFile => {
+            const revision = latestByFile[relativeFile];
+            lines.push(`${relativeFile} @ ${revision.index} ${formatLocalDate(revision.date)}`);
+        });
+
+        process.stdout.write(lines.join('\n'));
+        return;
+    }
+
     const revisions = getRevisionsForFile(context, fileArg);
     if (!revisions.length) {
         throw new Error('No snapshots found for file.');
@@ -191,6 +270,32 @@ function runDiff(context: IContext, args: string[]) {
     const fileArg = firstPositional(args);
     if (!fileArg) {
         throw new Error('diff requires a file path.');
+    }
+
+    if (isPacketRef(fileArg)) {
+        const revisions = getRevisionsForPacket(context, fileArg);
+        if (!revisions.length) {
+            throw new Error(`No snapshots found for packet: ${normalizePacketRef(fileArg)}`);
+        }
+
+        const latestByFile = collectLatestByFile(revisions);
+        const diffBlocks: string[] = [];
+        Object.keys(latestByFile).sort().forEach(relativeFile => {
+            const revision = latestByFile[relativeFile];
+            if (!fs.existsSync(revision.workspaceFile)) {
+                diffBlocks.push(`# ${relativeFile}`);
+                diffBlocks.push(`Working file missing: ${revision.workspaceFile}`);
+                diffBlocks.push('');
+                return;
+            }
+
+            diffBlocks.push(`# ${relativeFile}`);
+            diffBlocks.push(...buildSimpleDiff(`${relativeFile}@${revision.packetId || revision.index}`, readText(revision.revisionPath), relativeFile, readText(revision.workspaceFile)));
+            diffBlocks.push('');
+        });
+
+        console.log(diffBlocks.join('\n').trim());
+        return;
     }
 
     const positional = positionalArgs(args);
@@ -234,6 +339,23 @@ function runRestore(context: IContext, args: string[]) {
     const fileArg = firstPositional(args);
     if (!fileArg) {
         throw new Error('restore requires a file path.');
+    }
+
+    if (isPacketRef(fileArg)) {
+        const revisions = getRevisionsForPacket(context, fileArg);
+        if (!revisions.length) {
+            throw new Error(`No snapshots found for packet: ${normalizePacketRef(fileArg)}`);
+        }
+
+        const latestByFile = collectLatestByFile(revisions);
+        Object.keys(latestByFile).forEach(relativeFile => {
+            const revision = latestByFile[relativeFile];
+            ensureDirectory(path.dirname(revision.workspaceFile));
+            fs.copyFileSync(revision.revisionPath, revision.workspaceFile);
+        });
+
+        console.log(`Restored ${Object.keys(latestByFile).length} files from ${normalizePacketRef(fileArg)}.`);
+        return;
     }
 
     const positional = positionalArgs(args);
@@ -290,6 +412,25 @@ function getRevisionsForFile(context: IContext, fileArg: string): IRevisionEntry
     return revisions;
 }
 
+function getRevisionsForPacket(context: IContext, packetRef: string): IRevisionEntry[] {
+    const packetId = normalizePacketRef(packetRef);
+    const packetStore = readPacketStore(context);
+
+    const revisions = Object.keys(packetStore.snapshots || {})
+        .filter(relativeSnapshotPath => packetStore.snapshots[relativeSnapshotPath].packetId === packetId)
+        .map(relativeSnapshotPath => path.join(context.historyRoot, relativeSnapshotPath))
+        .filter(revisionPath => fs.existsSync(revisionPath))
+        .map(revisionPath => parseRevision(context, revisionPath))
+        .filter(revision => !!revision)
+        .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
+        .map((revision, index) => {
+            revision.index = index;
+            return revision;
+        });
+
+    return revisions;
+}
+
 function parseRevision(context: IContext, revisionPath: string): IRevisionEntry {
     const relative = path.relative(context.historyRoot, revisionPath);
     const match = relative.match(TIMESTAMP_SUFFIX);
@@ -301,6 +442,8 @@ function parseRevision(context: IContext, revisionPath: string): IRevisionEntry 
     const ext = match[2];
     const withoutSuffix = relative.slice(0, relative.length - match[0].length);
     const relativeFile = `${withoutSuffix}${ext}`.replace(/\\/g, '/');
+    const packetStore = readPacketStore(context);
+    const packetMeta = packetStore.snapshots[relative.replace(/\\/g, '/')];
 
     return {
         index: -1,
@@ -308,7 +451,8 @@ function parseRevision(context: IContext, revisionPath: string): IRevisionEntry 
         timestamp,
         date: parseTimestamp(timestamp),
         workspaceFile: path.join(context.workspaceRoot, relativeFile),
-        relativeFile
+        relativeFile,
+        packetId: packetMeta && packetMeta.packetId
     };
 }
 
@@ -324,12 +468,41 @@ function parseTimestamp(timestamp: string): Date {
 }
 
 function resolveRevision(revisions: IRevisionEntry[], revisionRef: string): IRevisionEntry {
+    if (revisionRef.startsWith('packet:')) {
+        const packetId = revisionRef.substring('packet:'.length);
+        const packetRevision = revisions.find(revision => revision.packetId === packetId);
+        if (!packetRevision) {
+            throw new Error(`Packet not found for file: ${packetId}`);
+        }
+        return packetRevision;
+    }
+
+    if (revisionRef.startsWith('pkt-')) {
+        const packetRevision = revisions.find(revision => revision.packetId === revisionRef);
+        if (!packetRevision) {
+            throw new Error(`Packet not found for file: ${revisionRef}`);
+        }
+        return packetRevision;
+    }
+
     const index = Number.parseInt(revisionRef, 10);
     if (Number.isNaN(index) || index < 0 || index >= revisions.length) {
         throw new Error(`Invalid revision index: ${revisionRef}`);
     }
 
     return revisions[index];
+}
+
+function collectLatestByFile(revisions: IRevisionEntry[]): {[relativeFile: string]: IRevisionEntry} {
+    const latestByFile: {[relativeFile: string]: IRevisionEntry} = {};
+
+    revisions.forEach(revision => {
+        if (!latestByFile[revision.relativeFile] || revision.timestamp > latestByFile[revision.relativeFile].timestamp) {
+            latestByFile[revision.relativeFile] = revision;
+        }
+    });
+
+    return latestByFile;
 }
 
 function formatRelativeAge(date: Date): string {
@@ -402,6 +575,43 @@ function normalizeRelative(context: IContext, inputPath: string): string {
 
 function readText(filePath: string): string {
     return fs.readFileSync(filePath, 'utf8');
+}
+
+function isPacketRef(value: string): boolean {
+    return !!value && (value.indexOf('packet:') === 0 || value.indexOf('pkt-') === 0);
+}
+
+function normalizePacketRef(value: string): string {
+    return value.indexOf('packet:') === 0 ? value.substring('packet:'.length) : value;
+}
+
+function readPacketStore(context: IContext): IPacketStoreData {
+    const storePath = path.join(context.historyRoot, '.vibe-packets.json');
+    if (!fs.existsSync(storePath)) {
+        return {
+            version: 1,
+            packets: {},
+            snapshots: {}
+        };
+    }
+
+    try {
+        const raw = fs.readFileSync(storePath, 'utf8');
+        const parsed = JSON.parse(raw) as IPacketStoreData;
+        return {
+            version: parsed.version || 1,
+            currentPacketId: parsed.currentPacketId,
+            lastActivityAt: parsed.lastActivityAt,
+            packets: parsed.packets || {},
+            snapshots: parsed.snapshots || {}
+        };
+    } catch (error) {
+        return {
+            version: 1,
+            packets: {},
+            snapshots: {}
+        };
+    }
 }
 
 function ensureDirectory(dirPath: string) {

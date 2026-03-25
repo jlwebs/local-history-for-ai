@@ -24,6 +24,8 @@ export interface IHistorySettings {
     enabled: boolean;
     historyPath: string;
     absolute: boolean;
+    packetGrouping: boolean;
+    packetCooldownMinutes: number;
 }
 
 /**
@@ -184,10 +186,12 @@ export class HistorySettings {
             saveDelay: <number>config.get('saveDelay') || 0,
             maxDisplay: <number>config.get('maxDisplay') || 10,
             dateLocale: <string>config.get('dateLocale') || undefined,
-            exclude: <string[]>config.get('exclude') || ['**/.history/**','**/.vscode/**','**/node_modules/**','**/typings/**','**/out/**'],
+            exclude: <string[]>config.get('exclude') || ['**/.history/**','**/.git/**','**/.vscode/**','**/node_modules/**','**/typings/**','**/out/**'],
             enabled: historyPath != null && historyPath !== '',
             historyPath: historyPath,
-            absolute: absolute
+            absolute: absolute,
+            packetGrouping: <boolean>config.get('packetGrouping') || false,
+            packetCooldownMinutes: <number>config.get('packetCooldownMinutes') || 2
         };
     }
 

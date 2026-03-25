@@ -32,8 +32,11 @@
     "activationEvents": [
         "onStartupFinished",
         "onView:treeLocalHistory",
+        "onCommand:treeLocalHistory.openControls",
         "onCommand:treeLocalHistory.refresh",
         "onCommand:treeLocalHistory.setRetentionDays",
+        "onCommand:treeLocalHistory.togglePacketGrouping",
+        "onCommand:treeLocalHistory.setPacketCooldown",
         "onCommand:local-history.showAll",
         "onCommand:local-history.showCurrent",
         "onCommand:local-history.compareToCurrent",
@@ -78,8 +81,29 @@
                 "icon": "$(trash)"
             },
             {
+                "command": "treeLocalHistory.openControls",
+                "title": "Open controls",
+                "when": false
+            },
+            {
                 "command": "treeLocalHistory.setRetentionDays",
                 "title": "Set retention days",
+                "when": false
+            },
+            {
+                "command": "treeLocalHistory.toggleEnabled",
+                "title": "Enable or disable history",
+                "when": false,
+                "icon": "$(pass-filled)"
+            },
+            {
+                "command": "treeLocalHistory.togglePacketGrouping",
+                "title": "Toggle smart packet grouping",
+                "when": false
+            },
+            {
+                "command": "treeLocalHistory.setPacketCooldown",
+                "title": "Set packet cooldown",
                 "when": false
             },
             {
@@ -151,6 +175,10 @@
         "menus": {
             "commandPalette": [
                 {
+                    "command": "treeLocalHistory.openControls",
+                    "when": "false"
+                },
+                {
                     "command": "treeLocalHistory.forCurrentFile",
                     "when": "false"
                 },
@@ -164,6 +192,18 @@
                 },
                 {
                     "command": "treeLocalHistory.setRetentionDays",
+                    "when": "false"
+                },
+                {
+                    "command": "treeLocalHistory.toggleEnabled",
+                    "when": "false"
+                },
+                {
+                    "command": "treeLocalHistory.togglePacketGrouping",
+                    "when": "false"
+                },
+                {
+                    "command": "treeLocalHistory.setPacketCooldown",
                     "when": "false"
                 }
             ],
@@ -176,32 +216,47 @@
                 {
                     "command": "treeLocalHistory.more",
                     "when": "view == treeLocalHistory || view == treeLocalHistoryExplorer",
-                    "group": "navigation@2"
+                    "group": "secondary@1"
                 },
                 {
                     "command": "treeLocalHistory.deleteAll",
                     "when": "view == treeLocalHistory || view == treeLocalHistoryExplorer",
-                    "group": "navigation@3"
+                    "group": "secondary@2"
                 },
                 {
                     "command": "treeLocalHistory.forCurrentFile",
                     "when": "view == treeLocalHistory || view == treeLocalHistoryExplorer",
-                    "group": "navigation_filter"
+                    "group": "secondary@3"
                 },
                 {
                     "command": "treeLocalHistory.forAll",
                     "when": "view == treeLocalHistory || view == treeLocalHistoryExplorer",
-                    "group": "navigation_filter"
+                    "group": "secondary@4"
                 },
                 {
                     "command": "treeLocalHistory.forSpecificFile",
                     "when": "view == treeLocalHistory || view == treeLocalHistoryExplorer",
-                    "group": "navigation_filter"
+                    "group": "secondary@5"
                 },
                 {
                     "command": "treeLocalHistory.setRetentionDays",
                     "when": "view == treeLocalHistory || view == treeLocalHistoryExplorer",
-                    "group": "navigation"
+                    "group": "secondary@6"
+                },
+                {
+                    "command": "treeLocalHistory.toggleEnabled",
+                    "when": "view == treeLocalHistory || view == treeLocalHistoryExplorer",
+                    "group": "secondary@7"
+                },
+                {
+                    "command": "treeLocalHistory.togglePacketGrouping",
+                    "when": "view == treeLocalHistory || view == treeLocalHistoryExplorer",
+                    "group": "secondary@8"
+                },
+                {
+                    "command": "treeLocalHistory.setPacketCooldown",
+                    "when": "view == treeLocalHistory || view == treeLocalHistoryExplorer",
+                    "group": "secondary@9"
                 }
             ],
             "view/item/context": [
@@ -270,6 +325,7 @@
                     "type": "array",
                     "default": [
                         "**/.history/**",
+                        "**/.git/**",
                         "**/.vscode/**",
                         "**/node_modules/**",
                         "**/typings/**",
@@ -292,6 +348,16 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Save absolute path in local-history.path"
+                },
+                "local-history.packetGrouping": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Group nearby changes into rolling packets for vibe-coding workflows."
+                },
+                "local-history.packetCooldownMinutes": {
+                    "type": "number",
+                    "default": 2,
+                    "description": "Packet cooldown in minutes. If no files change during this time, the next change starts a new packet."
                 },
                 "local-history.treeLocation": {
                     "type": "string",

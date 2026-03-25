@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-import { IHistoryFileProperties, HistoryController }  from './history.controller';
+import { IHistoryFileProperties, HistoryController, IPacketInfo }  from './history.controller';
 import { IHistorySettings, HistorySettings } from './history.settings';
 import { logInfo, logWarn } from './logger';
 
@@ -8,7 +8,10 @@ import { logInfo, logWarn } from './logger';
 
 const enum EHistoryTreeItem {
     None = 0,
+    Control,
     Group,
+    Packet,
+    FileGroup,
     File
 }
 
@@ -28,8 +31,6 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
     private currentHistoryFile: string;
     private currentHistoryPath: string;
     private historyFiles: Object; // {yesterday: IHistoryFileProperties[]}
-    // save historyItem structure to be able to redraw
-    private tree = {};  // {yesterday: {grp: HistoryItem, items: HistoryItem[]}}
     private selection: HistoryItem;
     private noLimit = false;
     private date;   // calculs result of relative date against now()
@@ -38,6 +39,7 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
     private searchPattern: string;
     private currentSettings: IHistorySettings;
     private emptyStateMessage = 'No history yet for the current file.';
+    private packetGroups: {[packetId: string]: {packet: IPacketInfo, files: {[sourceFile: string]: IHistoryFileProperties[]}}};
 
     constructor(private controller: HistoryController) {
         this.initLocation();
@@ -48,18 +50,20 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
     }
 
     getSettingsItem(): HistoryItem {
-        // Node only for settings...
-        switch (this.contentKind) {
-            case EHistoryTreeContentKind.All:
-                return new HistoryItem(this, 'Search: all', EHistoryTreeItem.None, null, this.currentHistoryPath);
-                break;
-            case EHistoryTreeContentKind.Current:
-                return new HistoryItem(this, 'Search: current', EHistoryTreeItem.None, null, this.currentHistoryFile);
-                break;
-            case EHistoryTreeContentKind.Search:
-                return new HistoryItem(this, `Search: ${this.searchPattern}`, EHistoryTreeItem.None, null, this.searchPattern);
-                break;
-        }
+        const settings = this.getEffectiveSettings();
+        const scope = this.getScopeLabel();
+        const enabled = settings && settings.enabled ? 'History on' : 'History off';
+        const packets = settings && settings.packetGrouping
+            ? `Packets on (${settings.packetCooldownMinutes}m)`
+            : 'Packets off';
+        const tooltip = [
+            `Scope: ${scope}`,
+            enabled,
+            packets,
+            'Click to change filters and packet settings.'
+        ].join('\n');
+
+        return new HistoryItem(this, 'Controls', EHistoryTreeItem.Control, null, tooltip, false, `${scope} | ${enabled} | ${packets}`, tooltip);
     }
 
     getTreeItem(element: HistoryItem): vscode.TreeItem {
@@ -68,30 +72,17 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
 
     getChildren(element?: HistoryItem): Promise<HistoryItem[]> {
         return new Promise(resolve => {
-
-            // redraw
-            const keys = Object.keys(this.tree);
-            if (keys && keys.length) {
-                if (!element) {
-                    const items = [];
-                    items.push(this.getSettingsItem());
-                    keys.forEach(key => items.push(this.tree[key].grp));
-                    return resolve(items);
-                } else if (this.tree[element.label].items) {
-                    return resolve(this.tree[element.label].items);
-                }
-            }
-
-            // rebuild
             let items: HistoryItem[] = [];
 
             if (!element) { // root
 
-                if (!this.historyFiles) {
+                if (!this.historyFiles && !this.packetGroups) {
 
                     if (!vscode.window.activeTextEditor || !vscode.window.activeTextEditor.document) {
                         this.emptyStateMessage = 'No active editor. Open a saved file to inspect local history.';
                         logWarn(this.emptyStateMessage);
+                        items.push(this.getSettingsItem());
+                        items.push(new HistoryItem(this, this.emptyStateMessage, EHistoryTreeItem.None));
                         return resolve(items);
                     }
 
@@ -103,21 +94,43 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
                     this.loadHistoryFile(filename, settings)
                         .then(() => {
                             items.push(this.getSettingsItem());
-                            items.push(...this.loadHistoryGroups(this.historyFiles));
+                            items.push(...(settings.packetGrouping
+                                ? this.loadPacketGroups(this.packetGroups)
+                                : this.loadHistoryGroups(this.historyFiles)));
                             resolve(items);
                         });
                 } else {
                     items.push(this.getSettingsItem());
-                    items.push(...this.loadHistoryGroups(this.historyFiles));
+                    items.push(...(this.currentSettings && this.currentSettings.packetGrouping
+                        ? this.loadPacketGroups(this.packetGroups)
+                        : this.loadHistoryGroups(this.historyFiles)));
                     resolve(items);
                 }
             } else {
                 if (element.kind === EHistoryTreeItem.Group) {
-                    this.historyFiles[element.label].forEach((file) => {
+                    this.historyFiles[element.nodeId].forEach((file) => {
                         items.push(new HistoryItem(this, this.getFileLabel(file), EHistoryTreeItem.File,
-                            vscode.Uri.file(file.file), element.label, true, this.getTimelineDescription(file), this.getFileTooltip(file)));
+                            vscode.Uri.file(file.file), element.nodeId, true, this.getTimelineDescription(file), this.getFileTooltip(file)));
                     });
-                    this.tree[element.label].items = items;
+                } else if (element.kind === EHistoryTreeItem.Packet) {
+                    const packetGroup = this.packetGroups[element.nodeId];
+                    if (packetGroup) {
+                        Object.keys(packetGroup.files).sort().forEach(sourceFile => {
+                            const snapshots = packetGroup.files[sourceFile];
+                            items.push(new HistoryItem(this, sourceFile, EHistoryTreeItem.FileGroup, null,
+                                element.nodeId, false, `${snapshots.length} changes`, `Packet ${element.nodeId}` , `${element.nodeId}:${sourceFile}`));
+                        });
+                    }
+                } else if (element.kind === EHistoryTreeItem.FileGroup) {
+                    const packetId = element.grp;
+                    const sourceFile = element.label;
+                    const packetGroup = this.packetGroups[packetId];
+                    if (packetGroup && packetGroup.files[sourceFile]) {
+                        packetGroup.files[sourceFile].forEach(file => {
+                            items.push(new HistoryItem(this, this.getFileLabel(file), EHistoryTreeItem.File,
+                                vscode.Uri.file(file.file), packetId, true, this.getTimelineDescription(file), this.getFileTooltip(file), `${packetId}:${file.file}`));
+                        });
+                    }
                 }
                 resolve(items);
             }
@@ -155,6 +168,7 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
 
                     // History files
                     this.historyFiles = {};
+                    this.packetGroups = {};
 
                     let grp = 'new';
                     const files = findFiles;
@@ -170,8 +184,8 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
                         this.emptyStateMessage = 'No matching history entries found.';
                     }
 
-                    if (files && files.length)
-                        files.map(file => this.controller.decodeFile(file, settings))
+                    if (files && files.length) {
+                        const decodedFiles = files.map(file => this.controller.decodeFile(file, settings))
                              .sort((f1, f2) => {
                                 if (!f1 || !f2)
                                     return 0;
@@ -180,8 +194,12 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
                                 if (f1.date < f2.date)
                                     return 1;
                                 return f1.name.localeCompare(f2.name);
-                             })
-                             .forEach((file, index) => {
+                             });
+
+                        if (settings.packetGrouping) {
+                            decodedFiles.forEach(file => this.addPacketGroupEntry(file, settings));
+                        } else {
+                            decodedFiles.forEach((file, index) => {
                                 if (file)
                                     if (grp !== 'Older') {
                                         grp = this.getRelativeDate(file.date);
@@ -195,9 +213,11 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
                                 // else
                                     // this.historyFiles['failed'].push(files[index]);
                             });
+                        }
+                    }
 
                     logInfo(`History lookup pattern="${pattern}" historyPath="${settings.historyPath}" matches=${files ? files.length : 0}`);
-                    return resolve(this.historyFiles);
+                    return resolve(settings.packetGrouping ? this.packetGroups : this.historyFiles);
                 })
         })
     }
@@ -209,7 +229,6 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
         if (keys && keys.length > 0)
             keys.forEach((key) => {
                 const item =  new HistoryItem(this, key, EHistoryTreeItem.Group);
-                this.tree[key] = {grp: item};
                 items.push(item);
             });
         else
@@ -218,12 +237,73 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
         return items;
     }
 
+    private loadPacketGroups(packetGroups: {[packetId: string]: {packet: IPacketInfo, files: {[sourceFile: string]: IHistoryFileProperties[]}}}): HistoryItem[] {
+        const items = [],
+              keys = packetGroups && Object.keys(packetGroups);
+
+        if (keys && keys.length > 0) {
+            keys.sort((left, right) => packetGroups[right].packet.startedAt.localeCompare(packetGroups[left].packet.startedAt))
+                .forEach(packetId => {
+                    const packet = packetGroups[packetId].packet;
+                    const fileCount = Object.keys(packet.files || {}).length;
+                    items.push(new HistoryItem(this, this.getPacketLabel(packet), EHistoryTreeItem.Packet, null, null, false,
+                        `${fileCount} files, ${packet.snapshotCount} changes`, this.getPacketTooltip(packet), packetId));
+                });
+        } else {
+            items.push(new HistoryItem(this, this.emptyStateMessage, EHistoryTreeItem.None));
+        }
+
+        return items;
+    }
+
+    private addPacketGroupEntry(file: IHistoryFileProperties, settings: IHistorySettings) {
+        if (!file || !file.file) {
+            return;
+        }
+
+        const packetMeta = this.controller.getPacketInfo(file.file, settings);
+        const packetId = packetMeta && packetMeta.packetId
+            ? packetMeta.packetId
+            : `legacy-${file.date.toISOString().substring(0, 19).replace(/[-:T]/g, '')}`;
+        const sourceFile = packetMeta && packetMeta.sourceFile
+            ? packetMeta.sourceFile
+            : `${file.name}${file.ext}`;
+
+        if (!this.packetGroups[packetId]) {
+            const packetStore = this.controller.getPacketStore(vscode.window.activeTextEditor.document.uri);
+            this.packetGroups[packetId] = {
+                packet: packetStore[packetId] || {
+                    id: packetId,
+                    startedAt: file.date.toISOString(),
+                    lastActivityAt: file.date.toISOString(),
+                    snapshotCount: 0,
+                    files: {}
+                },
+                files: {}
+            };
+        }
+
+        if (!this.packetGroups[packetId].files[sourceFile]) {
+            this.packetGroups[packetId].files[sourceFile] = [];
+        }
+
+        this.packetGroups[packetId].files[sourceFile].push(file);
+    }
+
     private getFileLabel(file: IHistoryFileProperties) {
         return `${file.name}${file.ext}`;
     }
 
     private getTimelineDescription(file: IHistoryFileProperties) {
         return this.getRelativeAge(file.date);
+    }
+
+    private getPacketTooltip(packet: IPacketInfo) {
+        return `Packet ${packet.id}\nStarted: ${packet.startedAt}\nLast activity: ${packet.lastActivityAt}\nSnapshots: ${packet.snapshotCount}`;
+    }
+
+    private getPacketLabel(packet: IPacketInfo) {
+        return `Packet ${this.getRelativeAge(new Date(packet.startedAt))}`;
     }
 
     private getFileTooltip(file: IHistoryFileProperties) {
@@ -303,6 +383,32 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
         this._onDidChangeTreeData.fire();
     }
 
+    private getScopeLabel() {
+        switch (this.contentKind) {
+            case EHistoryTreeContentKind.All:
+                return 'All files';
+            case EHistoryTreeContentKind.Search:
+                return `Search: ${this.searchPattern || '*'}`;
+            default:
+                return 'Current file';
+        }
+    }
+
+    private getEffectiveSettings(): IHistorySettings {
+        if (this.currentSettings) {
+            return this.currentSettings;
+        }
+
+        if (vscode.window.activeTextEditor && vscode.window.activeTextEditor.document) {
+            return this.controller.getSettings(vscode.window.activeTextEditor.document.uri);
+        }
+
+        const workspaceFolder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length
+            ? vscode.workspace.workspaceFolders[0].uri
+            : vscode.Uri.file(vscode.workspace.rootPath || process.cwd());
+        return this.controller.getSettings(workspaceFolder);
+    }
+
     public changeActiveFile() {
         if (!vscode.window.activeTextEditor)
             return;
@@ -315,12 +421,12 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
     }
 
     public refresh(noLimit = false): void {
-        this.tree = {};
         delete this.selection;
         this.noLimit = noLimit;
         delete this.currentHistoryFile;
         delete this.currentHistoryPath;
         delete this.historyFiles;
+        delete this.packetGroups;
         delete this.date;
         this._onDidChangeTreeData.fire();
     }
@@ -383,6 +489,121 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
             vscode.window.showInformationMessage(days > 0
                 ? `Vibe Local History will keep snapshots for ${days} day(s).`
                 : 'Vibe Local History cleanup disabled.');
+        });
+    }
+
+    public toggleEnabled(): void {
+        const activeUri = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document
+            ? vscode.window.activeTextEditor.document.uri
+            : undefined;
+        const config = vscode.workspace.getConfiguration('local-history', activeUri);
+        const current = <number>config.get('enabled');
+        const next = current === 0 ? 1 : 0;
+        const target = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length
+            ? vscode.ConfigurationTarget.Workspace
+            : vscode.ConfigurationTarget.Global;
+
+        config.update('enabled', next, target).then(() => {
+            this.controller.clearSettings();
+            this.refresh(this.noLimit);
+            logInfo(`History ${next === 0 ? 'disabled' : 'enabled'} from toolbar toggle.`);
+            vscode.window.showInformationMessage(next === 0
+                ? 'Vibe Local History disabled.'
+                : 'Vibe Local History enabled.');
+        });
+    }
+
+    public togglePacketGrouping(): void {
+        const activeUri = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document
+            ? vscode.window.activeTextEditor.document.uri
+            : undefined;
+        const config = vscode.workspace.getConfiguration('local-history', activeUri);
+        const current = <boolean>config.get('packetGrouping');
+        const target = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length
+            ? vscode.ConfigurationTarget.Workspace
+            : vscode.ConfigurationTarget.Global;
+
+        config.update('packetGrouping', !current, target).then(() => {
+            if (!current) {
+                this.contentKind = EHistoryTreeContentKind.All;
+            }
+            this.controller.clearSettings();
+            this.refresh(this.noLimit);
+            vscode.window.showInformationMessage(!current
+                ? 'Smart packet grouping enabled.'
+                : 'Smart packet grouping disabled.');
+        });
+    }
+
+    public setPacketCooldown(): void {
+        const activeUri = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document
+            ? vscode.window.activeTextEditor.document.uri
+            : undefined;
+        const config = vscode.workspace.getConfiguration('local-history', activeUri);
+        const current = <number>config.get('packetCooldownMinutes');
+        const target = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length
+            ? vscode.ConfigurationTarget.Workspace
+            : vscode.ConfigurationTarget.Global;
+
+        vscode.window.showInputBox({
+            prompt: 'Packet cooldown in minutes. If no file changes happen during this time, a new packet starts.',
+            value: `${current || 2}`,
+            validateInput: value => /^\d+$/.test(value) && Number.parseInt(value, 10) >= 1
+                ? undefined
+                : 'Enter an integer greater than or equal to 1.'
+        }).then(value => {
+            if (!value) {
+                return;
+            }
+
+            config.update('packetCooldownMinutes', Number.parseInt(value, 10), target).then(() => {
+                this.controller.clearSettings();
+                this.refresh(this.noLimit);
+                vscode.window.showInformationMessage(`Packet cooldown set to ${value} minute(s).`);
+            });
+        });
+    }
+
+    public openControls(): void {
+        const settings = this.getEffectiveSettings();
+        const scopeLabel = this.getScopeLabel();
+        const packetLabel = settings && settings.packetGrouping ? 'Disable smart packet grouping' : 'Enable smart packet grouping';
+        const enabledLabel = settings && settings.enabled ? 'Disable history tracking' : 'Enable history tracking';
+
+        vscode.window.showQuickPick([
+            {label: 'Current file', description: 'Show history for the active file only', action: 'scope-current'},
+            {label: 'All files', description: 'Show all tracked files in the workspace', action: 'scope-all'},
+            {label: 'Specific file search', description: 'Filter history by a custom glob pattern', action: 'scope-search'},
+            {label: enabledLabel, description: 'Toggle snapshot capture on or off', action: 'toggle-enabled'},
+            {label: 'Set retention days', description: 'Change automatic cleanup window', action: 'retention'},
+            {label: packetLabel, description: 'Group nearby changes into rolling packets', action: 'toggle-packets'},
+            {label: 'Set packet cooldown', description: `Current: ${settings.packetCooldownMinutes || 2} minute(s)`, action: 'packet-cooldown'},
+            {label: 'Refresh view', description: `Current scope: ${scopeLabel}`, action: 'refresh'}
+        ], {
+            placeHolder: 'Vibe Local History controls'
+        }).then(selection => {
+            if (!selection) {
+                return;
+            }
+
+            switch (selection.action) {
+                case 'scope-current':
+                    return this.forCurrentFile();
+                case 'scope-all':
+                    return this.forAll();
+                case 'scope-search':
+                    return this.forSpecificFile();
+                case 'toggle-enabled':
+                    return this.toggleEnabled();
+                case 'retention':
+                    return this.setRetentionDays();
+                case 'toggle-packets':
+                    return this.togglePacketGrouping();
+                case 'packet-cooldown':
+                    return this.setPacketCooldown();
+                default:
+                    return this.refresh(this.noLimit);
+            }
         });
     }
 
@@ -473,8 +694,6 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
             if (this.selection)
                 delete this.selection.iconPath;
             this.selection = element;
-            // this.selection.iconPath = this.selectIconPath;
-            this.tree[element.grp].grp.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
             this.redraw();
         }
     }
@@ -520,17 +739,30 @@ class HistoryItem extends vscode.TreeItem {
     public readonly kind: EHistoryTreeItem;
     public readonly file: vscode.Uri;
     public readonly grp: string;
+    public readonly nodeId: string;
 
     constructor(provider: HistoryTreeProvider, label: string = '', kind: EHistoryTreeItem, file?: vscode.Uri,
-        grp?: string, showIcon?: boolean, description?: string, tooltip?: string) {
+        grp?: string, showIcon?: boolean, description?: string, tooltip?: string, nodeId?: string) {
 
-        super(label, kind === EHistoryTreeItem.Group ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
+        super(label, kind === EHistoryTreeItem.Group || kind === EHistoryTreeItem.Packet || kind === EHistoryTreeItem.FileGroup
+            ? vscode.TreeItemCollapsibleState.Collapsed
+            : vscode.TreeItemCollapsibleState.None);
 
         this.kind = kind;
         this.file = file;
         this.grp = this.kind !== EHistoryTreeItem.None ? grp : undefined;
+        this.nodeId = nodeId || label;
 
         switch (this.kind) {
+            case EHistoryTreeItem.Control:
+                this.contextValue = 'localHistoryControl';
+                this.description = description;
+                this.tooltip = tooltip;
+                this.command = {
+                    command: 'treeLocalHistory.openControls',
+                    title: 'Open controls'
+                };
+                break;
             case EHistoryTreeItem.File:
                 this.contextValue = 'localHistoryItem';
                 this.description = description;
@@ -540,7 +772,11 @@ class HistoryItem extends vscode.TreeItem {
                     this.iconPath = false;
                 break;
             case EHistoryTreeItem.Group:
+            case EHistoryTreeItem.Packet:
+            case EHistoryTreeItem.FileGroup:
                 this.contextValue = 'localHistoryGrp';
+                this.description = description;
+                this.tooltip = tooltip;
                 break;
             default: // EHistoryTreeItem.None
                 this.contextValue = 'localHistoryNone';
@@ -548,6 +784,10 @@ class HistoryItem extends vscode.TreeItem {
         }
 
         // TODO: if current === file
+        if (this.kind === EHistoryTreeItem.Control) {
+            return;
+        }
+
         if (provider.contentKind === EHistoryTreeContentKind.Current) {
             this.command = this.kind === EHistoryTreeItem.File ? {
                 command: 'treeLocalHistory.compareToCurrentEntry',

@@ -43,6 +43,7 @@ Example snapshot path:
 - Snapshot deduplication with SHA-1 content checks
 - Debounced capture for noisy AI / Git / script workflows
 - Explorer view with timeline-style entries
+- Smart packet grouping for bursty vibe-coding sessions
 - Relative time display such as `3m ago`, `2h ago`, `7d ago`
 - Configurable retention window with automatic cleanup
 - Git-like CLI for AI agents and terminal workflows
@@ -51,6 +52,8 @@ Example snapshot path:
 ## VS Code UI
 
 The extension adds a dedicated `Vibe Local History` activity bar panel.
+
+The tree starts with a clickable `Controls` row so the main title bar can stay narrow. This is the practical replacement for a “second toolbar row”, since VS Code view titles only support one real row.
 
 History entries are grouped by broad recency buckets like:
 - `In the last hour`
@@ -65,10 +68,14 @@ Each item shows:
 
 Available view actions:
 - Refresh
-- See more history
-- Delete history
-- Set retention days
-- Filter by current file / all / specific file
+- `Controls` row for filter, retention, enable/disable, packet toggle, and packet cooldown
+- Overflow menu for less common actions
+
+When smart packet grouping is enabled:
+- the view automatically switches to `All files`
+- nearby file changes are grouped into rolling packet buckets
+- each packet expands into per-file groups
+- each file group expands into the underlying snapshots
 
 Context actions on history entries:
 - Open
@@ -106,11 +113,16 @@ Core commands:
 
 ```bash
 vibe-history status
+vibe-history packets
 vibe-history log src/extension.ts
+vibe-history log packet:pkt-20260325143012
 vibe-history show src/extension.ts 0
+vibe-history show packet:pkt-20260325143012
 vibe-history diff src/extension.ts
+vibe-history diff packet:pkt-20260325143012
 vibe-history diff src/extension.ts 0 1
 vibe-history restore src/extension.ts 1
+vibe-history restore packet:pkt-20260325143012
 ```
 
 Short aliases:
@@ -126,16 +138,18 @@ vibe-history rs src/extension.ts 0
 Command behavior:
 
 - `status` / `st`: show files whose working copy differs from the latest snapshot
+- `packets` / `pk`: list rolling packet ids with file/change counts
 - `log` / `lg`: show numbered revisions, newest first
-- `show` / `sh`: print a snapshot to stdout
-- `diff` / `di`: diff current file vs a snapshot, or snapshot vs snapshot
-- `restore` / `rs`: restore a snapshot back into the working tree
+- `show` / `sh`: print a snapshot to stdout, or print a packet summary
+- `diff` / `di`: diff current file vs a snapshot, snapshot vs snapshot, or packet vs workspace
+- `restore` / `rs`: restore a snapshot back into the working tree, or restore the latest snapshot for every file in a packet
 
 Revision syntax:
 
 - revision indexes come from `log`
 - `0` is the newest snapshot
 - `1` is the previous snapshot
+- packet references accept `packet:<id>` or raw `pkt-...`
 
 By default the CLI looks for the nearest `.history` directory from the current working directory. You can override that:
 
@@ -164,6 +178,8 @@ This makes it easy for AI tools to inspect history from the terminal without tou
   "local-history.enabled": 1,
   "local-history.path": "",
   "local-history.absolute": false,
+  "local-history.packetGrouping": false,
+  "local-history.packetCooldownMinutes": 2,
   "local-history.treeLocation": "localHistory"
 }
 ```
@@ -181,6 +197,8 @@ Meaning:
   - `2` = only within workspace folders
 - `local-history.path`: optional custom base path for `.history`
 - `local-history.absolute`: store absolute paths inside custom history path
+- `local-history.packetGrouping`: enable rolling packet-based grouping
+- `local-history.packetCooldownMinutes`: idle cutoff before the next change starts a new packet
 - `local-history.treeLocation`: dedicated `localHistory` panel
 
 ### History Path Behavior
