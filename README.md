@@ -215,7 +215,14 @@ Command Palette commands:
 
 ## CI / Release
 
-This repository includes GitHub Actions for packaging and releasing a VSIX.
+This repository includes GitHub Actions for build verification and VSIX release.
+
+On normal pushes and pull requests, the workflow:
+
+1. installs dependencies with `--ignore-scripts`
+2. compiles the extension
+3. packages a `.vsix`
+4. uploads the `.vsix` as a GitHub Actions artifact
 
 On tag push such as:
 
@@ -224,13 +231,10 @@ git tag v1.8.2
 git push origin v1.8.2
 ```
 
-the workflow:
+the workflow additionally:
 
-1. installs dependencies with `--ignore-scripts`
-2. compiles the extension
-3. packages a `.vsix`
-4. creates a GitHub Release
-5. uploads the VSIX artifact
+1. creates a GitHub Release
+2. uploads the VSIX artifact
 
 Workflow file:
 
