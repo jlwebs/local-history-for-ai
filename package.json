@@ -16,6 +16,9 @@
     "bugs": {
         "url": "https://github.com/zabel-xyz/local-history/issues"
     },
+    "bin": {
+        "vibe-history": "./out/src/history-cli.js"
+    },
     "keywords": [
         "local",
         "history",
@@ -73,6 +76,11 @@
                 "title": "Delete history",
                 "when": false,
                 "icon": "$(trash)"
+            },
+            {
+                "command": "treeLocalHistory.setRetentionDays",
+                "title": "Set retention days",
+                "when": false
             },
             {
                 "command": "treeLocalHistory.forCurrentFile",
@@ -153,6 +161,10 @@
                 {
                     "command": "treeLocalHistory.forSpecificFile",
                     "when": "false"
+                },
+                {
+                    "command": "treeLocalHistory.setRetentionDays",
+                    "when": "false"
                 }
             ],
             "view/title": [
@@ -185,6 +197,11 @@
                     "command": "treeLocalHistory.forSpecificFile",
                     "when": "view == treeLocalHistory || view == treeLocalHistoryExplorer",
                     "group": "navigation_filter"
+                },
+                {
+                    "command": "treeLocalHistory.setRetentionDays",
+                    "when": "view == treeLocalHistory || view == treeLocalHistoryExplorer",
+                    "group": "navigation"
                 }
             ],
             "view/item/context": [
@@ -292,6 +309,7 @@
     "scripts": {
         "vscode:prepublish": "tsc -p ./",
         "compile": "tsc -p ./",
+        "cli": "node ./out/src/history-cli.js",
         "package:vsix": "npx @vscode/vsce package --no-dependencies",
         "postinstall": "node ./node_modules/vscode/bin/install"
     },

@@ -27,6 +27,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('treeLocalHistory.forCurrentFile', treeProvider.forCurrentFile, treeProvider);
     vscode.commands.registerCommand('treeLocalHistory.forAll', treeProvider.forAll, treeProvider);
     vscode.commands.registerCommand('treeLocalHistory.forSpecificFile', treeProvider.forSpecificFile, treeProvider);
+    vscode.commands.registerCommand('treeLocalHistory.setRetentionDays', treeProvider.setRetentionDays, treeProvider);
 
     vscode.commands.registerCommand('treeLocalHistory.showEntry', treeProvider.show, treeProvider);
     vscode.commands.registerCommand('treeLocalHistory.showSideEntry', treeProvider.showSide, treeProvider);

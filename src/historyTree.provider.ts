@@ -32,10 +32,10 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
     private selection: HistoryItem;
     private noLimit = false;
     private date;   // calculs result of relative date against now()
-    private format; // function to format against locale
 
     public contentKind: EHistoryTreeContentKind = 0;
     private searchPattern: string;
+    private currentSettings: IHistorySettings;
 
     constructor(private controller: HistoryController) {
         this.initLocation();
@@ -92,6 +92,7 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
 
                     const filename = vscode.window.activeTextEditor.document.uri;
                     const settings = this.controller.getSettings(filename);
+                    this.currentSettings = settings;
 
                     this.loadHistoryFile(filename, settings)
                         .then(() => {
@@ -107,8 +108,8 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
             } else {
                 if (element.kind === EHistoryTreeItem.Group) {
                     this.historyFiles[element.label].forEach((file) => {
-                        items.push(new HistoryItem(this, this.format(file), EHistoryTreeItem.File,
-                            vscode.Uri.file(file.file), element.label, true));
+                        items.push(new HistoryItem(this, this.getFileLabel(file), EHistoryTreeItem.File,
+                            vscode.Uri.file(file.file), element.label, true, this.getTimelineDescription(file), this.getFileTooltip(file)));
                     });
                     this.tree[element.label].items = items;
                 }
@@ -144,13 +145,6 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
 
                     // History files
                     this.historyFiles = {};
-
-                    this.format = (file) => {
-                        const result = file.date.toLocaleString(settings.dateLocale);
-                        if (this.contentKind !== EHistoryTreeContentKind.Current)
-                            return `${file.name}${file.ext} (${result})`
-                        return result;
-                    };
 
                     let grp = 'new';
                     const files = findFiles;
@@ -198,6 +192,43 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
             items.push(new HistoryItem(this, 'No history', EHistoryTreeItem.None));
 
         return items;
+    }
+
+    private getFileLabel(file: IHistoryFileProperties) {
+        return `${file.name}${file.ext}`;
+    }
+
+    private getTimelineDescription(file: IHistoryFileProperties) {
+        return this.getRelativeAge(file.date);
+    }
+
+    private getFileTooltip(file: IHistoryFileProperties) {
+        const absoluteTime = this.currentSettings && file.date
+            ? file.date.toLocaleString(this.currentSettings.dateLocale)
+            : '';
+        return `${file.file}\n${this.getRelativeAge(file.date)}${absoluteTime ? ` - ${absoluteTime}` : ''}`;
+    }
+
+    private getRelativeAge(fileDate: Date) {
+        const elapsedMs = Date.now() - fileDate.getTime();
+        const minute = 60 * 1000;
+        const hour = 60 * minute;
+        const day = 24 * hour;
+
+        if (elapsedMs < minute)
+            return 'Just now';
+        if (elapsedMs < hour)
+            return `${Math.max(1, Math.floor(elapsedMs / minute))}m ago`;
+        if (elapsedMs < day)
+            return `${Math.max(1, Math.floor(elapsedMs / hour))}h ago`;
+        if (elapsedMs < day * 30)
+            return `${Math.max(1, Math.floor(elapsedMs / day))}d ago`;
+
+        const month = Math.max(1, Math.floor(elapsedMs / (day * 30)));
+        if (month < 12)
+            return `${month}mo ago`;
+
+        return `${Math.max(1, Math.floor(month / 12))}y ago`;
     }
 
     private getRelativeDate(fileDate: Date) {
@@ -274,6 +305,61 @@ export default class HistoryTreeProvider implements vscode.TreeDataProvider<Hist
         if (!this.noLimit) {
             this.refresh(true);
         }
+    }
+
+    public setRetentionDays(): void {
+        const activeUri = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document
+            ? vscode.window.activeTextEditor.document.uri
+            : undefined;
+        const config = vscode.workspace.getConfiguration('local-history', activeUri);
+        const current = <number>config.get('daysLimit');
+
+        const options = [
+            {label: '7 days', value: 7},
+            {label: '30 days', value: 30},
+            {label: '90 days', value: 90},
+            {label: 'Keep forever', value: 0},
+            {label: 'Custom...', value: -1}
+        ];
+
+        vscode.window.showQuickPick(options, {
+            placeHolder: `Retention window (current: ${current || 0} days)`
+        }).then(async selection => {
+            if (!selection) {
+                return;
+            }
+
+            let days = selection.value;
+            if (days === -1) {
+                const input = await vscode.window.showInputBox({
+                    prompt: 'Keep history for how many days? Use 0 to disable cleanup.',
+                    value: `${current || 30}`,
+                    validateInput: value => /^\d+$/.test(value) ? undefined : 'Enter a non-negative integer.'
+                });
+
+                if (input == null) {
+                    return;
+                }
+
+                days = Number.parseInt(input, 10);
+            }
+
+            const target = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length
+                ? vscode.ConfigurationTarget.Workspace
+                : vscode.ConfigurationTarget.Global;
+
+            await config.update('daysLimit', days, target);
+
+            if (activeUri) {
+                await this.controller.purgeExpiredHistory(activeUri);
+            }
+
+            this.controller.clearSettings();
+            this.refresh(this.noLimit);
+            vscode.window.showInformationMessage(days > 0
+                ? `Vibe Local History will keep snapshots for ${days} day(s).`
+                : 'Vibe Local History cleanup disabled.');
+        });
     }
 
     public deleteAll(): void {
@@ -412,7 +498,7 @@ class HistoryItem extends vscode.TreeItem {
     public readonly grp: string;
 
     constructor(provider: HistoryTreeProvider, label: string = '', kind: EHistoryTreeItem, file?: vscode.Uri,
-        grp?: string, showIcon?: boolean) {
+        grp?: string, showIcon?: boolean, description?: string, tooltip?: string) {
 
         super(label, kind === EHistoryTreeItem.Group ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
 
@@ -423,7 +509,8 @@ class HistoryItem extends vscode.TreeItem {
         switch (this.kind) {
             case EHistoryTreeItem.File:
                 this.contextValue = 'localHistoryItem';
-                this.tooltip = file.fsPath; // TODO remove before .history
+                this.description = description;
+                this.tooltip = tooltip || file.fsPath;
                 this.resourceUri = file;
                 if (showIcon)
                     this.iconPath = false;
