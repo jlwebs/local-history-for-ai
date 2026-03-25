@@ -46,15 +46,7 @@
             "localHistory": [
                 {
                     "id": "treeLocalHistory",
-                    "name": "Vibe Local History",
-                    "when": "local-history:treeLocation == localHistory"
-                }
-            ],
-            "explorer": [
-                {
-                    "id": "treeLocalHistoryExplorer",
-                    "name": "Vibe Local History",
-                    "when": "local-history:treeLocation == explorer"
+                    "name": "Vibe Local History"
                 }
             ]
         },
@@ -297,10 +289,9 @@
                     "type": "string",
                     "default": "localHistory",
                     "enum": [
-                        "explorer",
                         "localHistory"
                     ],
-                    "description": "Specify a location for tree view: explorer or localHistory"
+                    "description": "Tree view location. Only the dedicated Vibe Local History panel is supported."
                 }
             }
         }

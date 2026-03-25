@@ -50,7 +50,7 @@ Example snapshot path:
 
 ## VS Code UI
 
-The extension adds a `Vibe Local History` view in the Explorer or its own activity bar container.
+The extension adds a dedicated `Vibe Local History` activity bar panel.
 
 History entries are grouped by broad recency buckets like:
 - `In the last hour`
@@ -181,7 +181,7 @@ Meaning:
   - `2` = only within workspace folders
 - `local-history.path`: optional custom base path for `.history`
 - `local-history.absolute`: store absolute paths inside custom history path
-- `local-history.treeLocation`: `explorer` or `localHistory`
+- `local-history.treeLocation`: dedicated `localHistory` panel
 
 ### History Path Behavior
 
